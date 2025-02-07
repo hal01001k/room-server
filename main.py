@@ -1,75 +1,94 @@
-import asyncio
-import websockets
 import json
+import tornado.ioloop
+import tornado.web
+import tornado.websocket
+from tornado.options import define, options
 
-# Set to store all connected clients
-connected_clients = set()
+define("port", default=8765, help="run on the given port", type=int)
 
-async def handler(websocket, path):
-    try:
+class WebSocketHandler(tornado.websocket.WebSocketHandler):
+    # Set to store all connected clients
+    clients = set()
+    
+    def check_origin(self, origin):
+        # Allow connections from any origin
+        return True
+        
+    def open(self):
         # Add the new client to the set of connected clients
-        connected_clients.add(websocket)
-        print(f"New client connected: {websocket.remote_address}")
-        print(f"Total connected clients: {len(connected_clients)}")
-
-        async for message in websocket:
-            try:
-                # Parse the incoming message
-                data = json.loads(message)
-                x = data.get("x")
-                y = data.get("y")
-
-                if x is not None and y is not None:
-                    print(f"Received data from {websocket.remote_address} - Mouse moved to: X={x}, Y={y}")
-                    
-                    # Prepare broadcast message
-                    broadcast_message = json.dumps({
-                        "status": "success", 
-                        "x": x, 
-                        "y": y,
-                        "source": str(websocket.remote_address)  # Add source information
-                    })
-                    
-                    # Broadcast to all connected clients except the sender
-                    await broadcast(broadcast_message, websocket)
-
-                else:
-                    print(f"Invalid data received: {data}")
-                    await websocket.send(json.dumps({"status": "error", "message": "Missing x or y"}))
-
-            except json.JSONDecodeError as e:
-                print(f"Invalid message format: {message}. Error: {e}")
-                await websocket.send(json.dumps({"status": "error", "message": "Invalid JSON format"}))
-
-    except Exception as e:
-        print(f"Error in handler: {e}")
-    finally:
+        WebSocketHandler.clients.add(self)
+        print(f"New client connected: {self.request.remote_ip}")
+        print(f"Total connected clients: {len(WebSocketHandler.clients)}")
+        
+    def on_message(self, message):
+        try:
+            # Parse the incoming message
+            data = json.loads(message)
+            x = data.get("x")
+            y = data.get("y")
+            
+            if x is not None and y is not None:
+                print(f"Received data from {self.request.remote_ip} - Mouse moved to: X={x}, Y={y}")
+                
+                # Prepare broadcast message
+                broadcast_message = json.dumps({
+                    "status": "success", 
+                    "x": x, 
+                    "y": y,
+                    "source": self.request.remote_ip  # Add source information
+                })
+                
+                # Broadcast to all connected clients except the sender
+                self.broadcast(broadcast_message)
+            else:
+                print(f"Invalid data received: {data}")
+                self.write_message(json.dumps({
+                    "status": "error",
+                    "message": "Missing x or y coordinates"
+                }))
+                
+        except json.JSONDecodeError as e:
+            print(f"Invalid message format: {message}. Error: {e}")
+            self.write_message(json.dumps({
+                "status": "error",
+                "message": "Invalid JSON format"
+            }))
+        except Exception as e:
+            print(f"Error processing message: {e}")
+            self.write_message(json.dumps({
+                "status": "error",
+                "message": "Internal server error"
+            }))
+            
+    def on_close(self):
         # Remove the client from the connected clients set
-        connected_clients.remove(websocket)
-        print(f"Client disconnected. Remaining clients: {len(connected_clients)}")
+        WebSocketHandler.clients.remove(self)
+        print(f"Client disconnected. Remaining clients: {len(WebSocketHandler.clients)}")
+        
+    def broadcast(self, message):
+        """
+        Broadcast a message to all connected clients except the sender.
+        
+        :param message: JSON-encoded message to broadcast
+        """
+        for client in WebSocketHandler.clients:
+            if client != self:  # Don't send back to sender
+                try:
+                    client.write_message(message)
+                except Exception as e:
+                    print(f"Error broadcasting to client: {e}")
 
-async def broadcast(message, sender):
-    """
-    Broadcast a message to all connected clients except the sender.
-    
-    :param message: JSON-encoded message to broadcast
-    :param sender: WebSocket of the client that sent the original message
-    """
-    # Create a list of tasks to send the message to all clients except the sender
-    tasks = [
-        client.send(message) 
-        for client in connected_clients 
-        if client != sender
-    ]
-    
-    # Run all send tasks concurrently
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+def make_app():
+    return tornado.web.Application([
+        (r"/", WebSocketHandler),
+    ], debug=True)
 
-async def main():
-    server = await websockets.serve(handler, "localhost", 8765)
-    print("WebSocket server started on ws://localhost:8765")
-    await server.wait_closed()
+def main():
+    tornado.options.parse_command_line()
+    app = make_app()
+    app.listen(options.port)
+    print(f"WebSocket server started on ws://localhost:{options.port}")
+    tornado.ioloop.IOLoop.current().start()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
