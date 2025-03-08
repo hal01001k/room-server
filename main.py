@@ -118,7 +118,7 @@ def main() -> None:
     tornado.options.parse_command_line()
     app = make_app()
     app.listen(options.port)
-    logging.info(f"WebSocket server started on ws://localhost:{options.port}")
+    logging.info(f"WebSocket server ws://localhost:{options.port}")
     tornado.ioloop.IOLoop.current().start()
 
 if __name__ == "__main__":
